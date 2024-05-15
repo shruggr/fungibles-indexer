@@ -5,6 +5,7 @@
     "version": "0.2.0",
     "configurations": [
 
+
         {
             "name": "Launch file",
             "type": "go",
@@ -20,16 +21,25 @@
                 "-v=1",
             ]
         }, {
-            "name": "bsv20",
+            "name": "fungibles",
             "type": "go",
             "request": "launch",
             "mode": "debug",
-            "program": "${workspaceFolder}/cmd/bsv20/bsv20.go",
+            "program": "${workspaceFolder}/cmd/fungibles/fungibles.go",
             "args": [
                 "-id=bsv20",
                 "-t=ee98489e492a2e2d7ba187db460d5200dc99035efbf2adb818d5f96d677aaba1",
                 "-s=783968",
                 "-v=1",
+            ]
+        }, {
+            "name": "server",
+            "type": "go",
+            "request": "launch",
+            "mode": "debug",
+            "program": "${workspaceFolder}/cmd/server/server.go",
+            "args": [
+                "-p=8082",
             ]
         }
     ]

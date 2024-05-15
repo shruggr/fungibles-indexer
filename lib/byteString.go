@@ -17,6 +17,9 @@ func NewByteStringFromHex(s string) ByteString {
 
 // MarshalJSON serializes ByteArray to hex
 func (s ByteString) MarshalJSON() ([]byte, error) {
+	if s == nil {
+		return json.Marshal(nil)
+	}
 	return json.Marshal(s.String())
 }
 

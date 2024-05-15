@@ -36,45 +36,6 @@ const BSV20_INCLUDE_FEE = 10000000
 
 var ctx = context.Background()
 
-// func ParseBsv20(ctx *lib.IndexContext) (tickers []string) {
-// 	tokens := map[string]struct{}{}
-// 	for _, txo := range ctx.Txos {
-// 		if bsv20, ok := txo.Data["bsv20"].(*Bsv20); ok {
-// 			list := ordlock.ParseScript(txo)
-
-// 			if list != nil {
-// 				txo.PKHash = list.PKHash
-// 				bsv20.PKHash = list.PKHash
-// 				bsv20.Price = list.Price
-// 				bsv20.PayOut = list.PayOut
-// 				bsv20.Listing = true
-
-// 				var decimals uint8
-// 				if bsv20.Ticker != "" {
-// 					token := LoadTicker(bsv20.Ticker)
-// 					if token != nil {
-// 						decimals = token.Decimals
-// 					}
-// 					tokens[bsv20.Ticker] = struct{}{}
-
-// 				} else {
-// 					token := LoadTokenById(bsv20.Id)
-// 					if token != nil {
-// 						decimals = token.Decimals
-// 					}
-// 					tokens[bsv20.Id.String()] = struct{}{}
-// 				}
-// 				bsv20.PricePerToken = float64(bsv20.Price) / (float64(*bsv20.Amt) / math.Pow(10, float64(decimals)))
-// 			}
-// 		}
-// 	}
-
-// 	for tick, _ := range tokens {
-// 		tickers = append(tickers, tick)
-// 	}
-// 	return
-// }
-
 func ParseBsv20Inscription(ord *lib.File, txo *lib.Txo) (interface{}, error) {
 	mime := strings.ToLower(ord.Type)
 	if !strings.HasPrefix(mime, "application/bsv-20") &&
@@ -215,8 +176,8 @@ func ParseBsv20Inscription(ord *lib.File, txo *lib.Txo) (interface{}, error) {
 type TokenFunds struct {
 	Ticker     *string       `json:"tick,omitempty"`
 	Id         *lib.Outpoint `json:"id,omitempty"`
-	Total      int64         `json:"fundTotal"`
 	PKHash     []byte        `json:"fundPKHash"`
+	Total      int64         `json:"fundTotal"`
 	Used       int64         `json:"fundUsed"`
 	PendingOps uint32        `json:"pendingOps"`
 	Pending    uint64        `json:"pending"`
@@ -237,11 +198,7 @@ func (t *TokenFunds) Save() {
 	if t.Total == 0 {
 		return
 	}
-	if _, err := lib.Rdb.Pipelined(ctx, func(pipe redis.Pipeliner) error {
-		pipe.ZAdd(ctx, "FUNDTOTAL", redis.Z{Score: float64(t.Total), Member: t.TickID()})
-		pipe.ZAdd(ctx, "FUNDUSED", redis.Z{Score: float64(t.Used), Member: t.TickID()})
-		return nil
-	}); err != nil {
+	if err := lib.Rdb.ZAdd(ctx, "FUNDTOTAL", redis.Z{Score: float64(t.Total), Member: t.TickID()}).Err(); err != nil {
 		panic(err)
 	}
 
@@ -280,18 +237,41 @@ func (t *TokenFunds) UpdateFunding() {
 	t.Used = 0
 	t.PendingOps = 0
 
-	if count, err := lib.Rdb.ZCount(ctx, fmt.Sprintf("FVALIDATE:%s", t.Id.String()), "-inf", "+inf").Result(); err != nil {
+	if count, err := GetPendingOps(t.TickID()); err != nil {
 		log.Panicln(err)
 	} else {
 		t.PendingOps += uint32(count)
 	}
-	if count, err := lib.Rdb.ZCount(ctx, "FTXOSTATE:"+t.Id.String(), "-inf", "+inf").Result(); err != nil {
+	if t.Used, err = GetFundUsed(t.TickID()); err != nil {
 		log.Panicln(err)
-	} else {
-		t.Used = (count - int64(t.PendingOps)) * FUNGIBLE_OP_COST
 	}
-
 	t.Save()
+}
+
+func GetPendingOps(tickId string) (uint32, error) {
+	if count, err := lib.Rdb.ZCount(ctx, "FSTATUS:"+tickId, "0", "0").Result(); err != nil {
+		return 0, err
+	} else {
+		return uint32(count), nil
+	}
+}
+
+func GetFundUsed(tickId string) (int64, error) {
+	if validCount, err := lib.Rdb.ZCount(ctx, "FSTATUS:"+tickId, "1", "1").Result(); err != nil {
+		return 0, err
+	} else if invalidCount, err := lib.Rdb.ZCount(ctx, "FSTATUS:"+tickId, "-1", "-1").Result(); err != nil {
+		return 0, err
+	} else {
+		return (validCount + invalidCount) * FUNGIBLE_OP_COST, nil
+	}
+}
+
+func GetFundTotal(tickId string) (int64, error) {
+	if total, err := lib.Rdb.ZScore(ctx, "FUNDTOTAL", tickId).Result(); err != nil {
+		return 0, err
+	} else {
+		return int64(total), nil
+	}
 }
 
 func InitializeFunding(concurrency int) map[string]*TokenFunds {

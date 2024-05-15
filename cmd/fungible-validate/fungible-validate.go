@@ -9,8 +9,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -18,7 +16,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 	"github.com/redis/go-redis/v9"
-	"github.com/shruggr/fungibles-indexer/indexer"
 	"github.com/shruggr/fungibles-indexer/lib"
 	"github.com/shruggr/fungibles-indexer/ordinals"
 )
@@ -69,16 +66,6 @@ func init() {
 		Password: "", // no password set
 		DB:       0,  // use default DB
 	})
-
-	err = indexer.Initialize(db, rdb)
-	if err != nil {
-		log.Panic(err)
-	}
-
-	err = ordinals.Initialize(indexer.Db, indexer.Rdb)
-	if err != nil {
-		log.Panic(err)
-	}
 }
 
 func main() {
@@ -189,14 +176,14 @@ func processFungibles() (didWork bool) {
 	m.Lock()
 	fundsList := make([]*ordinals.TokenFunds, 0, len(tickIdFunds))
 	for _, funds := range tickIdFunds {
-		if funds.Balance() >= ordinals.BSV20V2_OP_COST {
+		if funds.Balance() >= ordinals.FUNGIBLE_OP_COST {
 			fundsList = append(fundsList, funds)
 		}
 	}
 	m.Unlock()
 
 	for _, funds := range fundsList {
-		if funds.Balance() < ordinals.BSV20V2_OP_COST {
+		if funds.Balance() < ordinals.FUNGIBLE_OP_COST {
 			continue
 		}
 
@@ -208,23 +195,27 @@ func processFungibles() (didWork bool) {
 				<-limiter
 				wg.Done()
 			}()
-			token, err := ordinals.LoadFungible(funds.TickID(), false)
+			tickId := funds.TickID()
+			token, err := ordinals.LoadFungible(tickId, false)
 			if err != nil {
 				panic(err)
 			}
 			if token == nil {
 				return
 			}
-			limit := funds.Balance() / ordinals.BSV20V2_OP_COST
-			tickKey := fmt.Sprintf("FVALIDATE:%s:", funds.TickID())
+			limit := funds.Balance() / ordinals.FUNGIBLE_OP_COST
+			var supply uint64
+			if fSupply, err := rdb.ZScore(ctx, "FSUPPLY", tickId).Result(); err != nil {
+				panic(err)
+			} else {
+				supply = uint64(fSupply)
+			}
+			tickKey := fmt.Sprintf("FVALIDATE:%s:", tickId)
 			blockIter := rdb.Scan(ctx, 0, tickKey+"*", 0).Iterator()
+
 			for blockIter.Next(ctx) {
-				key := blockIter.Val()
-				var height uint64
-				if height, err = strconv.ParseUint(strings.TrimPrefix(key, tickKey), 10, 32); err != nil {
-					panic(err)
-				}
-				iter := rdb.ZScan(ctx, key, 0, "", limit).Iterator()
+				validateKey := blockIter.Val()
+				iter := rdb.ZScan(ctx, validateKey, 0, "", limit).Iterator()
 				var prevTxid []byte
 				for iter.Next(ctx) {
 					outpoint, err := lib.NewOutpointFromString(iter.Val())
@@ -238,48 +229,58 @@ func processFungibles() (didWork bool) {
 							break
 						}
 						var reason string
-						if *token.Supply >= token.Max {
-							reason = fmt.Sprintf("supply %d >= max %d", *token.Supply, token.Max)
+						if supply >= token.Max {
+							reason = fmt.Sprintf("supply %d >= max %d", supply, token.Max)
 						} else if *token.Limit > 0 && ftxo.Amt > *token.Limit {
 							reason = fmt.Sprintf("amt %d > limit %d", ftxo.Amt, *token.Limit)
 						}
 						if reason != "" {
-							ftxo.Reason = &reason
-							ftxo.Save()
-							rdb.ZRem(ctx, key, ftxo.Outpoint.String())
+							if _, err = rdb.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+								ftxo.SetStatus(pipe, -1, reason)
+								pipe.ZRem(ctx, validateKey, ftxo.Outpoint.String())
+								return nil
+							}); err != nil {
+								panic(err)
+							}
 							break
 						}
-						if token.Max-*token.Supply < ftxo.Amt {
-							reason = fmt.Sprintf("supply %d + amt %d > max %d", *token.Supply, ftxo.Amt, token.Max)
-							ftxo.Amt = token.Max - *token.Supply
+						if token.Max-supply < ftxo.Amt {
+							reason = fmt.Sprintf("supply %d + amt %d > max %d", supply, ftxo.Amt, token.Max)
+							ftxo.Amt = token.Max - supply
 							ftxo.Reason = &reason
 							ftxo.Status = int(ordinals.Valid)
 						} else {
 							ftxo.Status = int(ordinals.Valid)
 						}
 						ftxo.Save()
-						*token.Supply += ftxo.Amt
-						rdb.Pipelined(ctx, func(pipe redis.Pipeliner) error {
-							pipe.JSONSet(ctx, "FUNGIBLE:"+funds.TickID(), "$.supply", *token.Supply)
-							pipe.ZRem(ctx, key, ftxo.Outpoint.String())
+						supply -= ftxo.Amt
+						if _, err = rdb.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+							token.DecrementSupply(pipe, ftxo.Amt)
+							pipe.ZRem(ctx, validateKey, ftxo.Outpoint.String())
 							return nil
-						})
+						}); err != nil {
+							panic(err)
+						}
 						funds.Used += ordinals.FUNGIBLE_OP_COST
-						fmt.Println("Validated Mint:", funds.TickID(), *token.Supply, token.Max)
+						fmt.Println("Validated Mint:", tickId, supply, token.Max)
 						didWork = true
 					case "transfer":
 						if bytes.Equal(prevTxid, ftxo.Outpoint.Txid()) {
-							// fmt.Printf("Skipping: %s %x\n", funds.Id.String(), bsv20.Txid)
-							continue
+							break
 						}
 						prevTxid = ftxo.Outpoint.Txid()
-						outputs := ordinals.ValidateV2Transfer(ftxo.Txid, funds.Id, ftxo.Height != nil && *ftxo.Height <= currentHeight)
+						outputs, aborted := ordinals.ValidateV2Transfer(ftxo.Outpoint.Txid(), tickId, ftxo.Height == 0)
+						if aborted {
+							break
+						}
+
 						if outputs > 0 {
 							didWork = true
 						}
-						funds.Used += int64(outputs) * ordinals.BSV20V2_OP_COST
-						fmt.Printf("Validated Transfer: %s %x\n", funds.Id.String(), ftxo.Txid)
-						if err = pipe.ZRem(ctx, validateKey, b.Outpoint.String()).Err(); err != nil {
+						// if
+						funds.Used += int64(outputs) * ordinals.FUNGIBLE_OP_COST
+						fmt.Printf("Validated Transfer: %s %x\n", tickId, ftxo.Outpoint.Txid())
+						if err = rdb.ZRem(ctx, validateKey, ftxo.Outpoint.String()).Err(); err != nil {
 							panic(err)
 						}
 					}

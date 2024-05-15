@@ -69,7 +69,7 @@ func CalculateOrigins(ctx *lib.IndexContext) {
 
 func ParseInscriptions(ctx *lib.IndexContext) {
 	for _, txo := range ctx.Txos {
-		if txo.PKHash != nil && len(*txo.PKHash) != 0 && txo.Satoshis != 1 {
+		if txo.PKHash != nil && len(*txo.PKHash) != 0 { //&& txo.Satoshis != 1 {
 			continue
 		}
 		ParseScript(txo)

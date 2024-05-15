@@ -3,8 +3,8 @@ package ordinals
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"math"
+	"strings"
 
 	"github.com/redis/go-redis/v9"
 	"github.com/shruggr/fungibles-indexer/lib"
@@ -29,6 +29,10 @@ type Fungible struct {
 	Output     []byte        `json:"-"`
 }
 
+func (b *Fungible) ID() string {
+	return "FUNGIBLE:" + b.TickID()
+}
+
 func (b *Fungible) TickID() string {
 	if b.Id != nil {
 		return b.Id.String()
@@ -36,6 +40,19 @@ func (b *Fungible) TickID() string {
 		return *b.Ticker
 	}
 	panic("No tick")
+}
+
+func FormatTickID(tickId string) string {
+	if len(tickId) >= 66 {
+		return strings.ToLower(tickId)
+	} else {
+		return strings.ToUpper(tickId)
+	}
+}
+
+func (b *Fungible) DecrementSupply(cmdable redis.Cmdable, amt uint64) uint64 {
+	cmdable.ZIncrBy(ctx, "FSUPPLY", float64(amt)*-1, b.TickID()).Result()
+	return b.Max
 }
 
 func (b *Fungible) Save() {
@@ -64,50 +81,27 @@ func (b *Fungible) Save() {
 
 func IndexFungibles(txn *lib.IndexContext) {
 	ParseInscriptions(txn)
-	IndexFungibleSpends(txn)
-	IndexFungibleTxos(txn)
-	if err := lib.Rdb.ZAdd(ctx, "TXLOG", redis.Z{Score: float64(txn.Height), Member: txn.Txid}).Err(); err != nil {
-		panic(err)
-	}
-}
-
-func IndexFungibleSpends(txn *lib.IndexContext) {
 	spends := make([]string, len(txn.Spends))
 	sales := make([]bool, len(txn.Spends))
 	for vin, spend := range txn.Spends {
 		spends[vin] = spend.Outpoint.String()
 		sales[vin] = bytes.Contains(*txn.Tx.Inputs[vin].UnlockingScript, ordlock.OrdLockSuffix)
 	}
-	ftxos, err := LoadFungibleTxos(spends, false)
+	inTxos, err := LoadFungibleTxos(spends)
 	if err != nil {
 		panic(err)
 	}
-
-	pipe := lib.Rdb.Pipeline()
-	// spent := make([]string, len(txn.Spends))
-	for vin, btxo := range ftxos {
+	// pipe := lib.Rdb.Pipeline()
+	for vin, btxo := range inTxos {
 		if btxo == nil {
 			continue
 		}
-
-		btxo.Spend = &txn.Txid
-		btxo.SpendHeight = txn.Height
-		if btxo.Listing != nil {
-			btxo.Listing.Sale = sales[vin]
-		}
-		btxo.Save()
+		btxo.SetSpend(lib.Rdb, txn.Txid, txn.Height, sales[vin])
 		if btxo.PKHash == nil {
 			continue
 		}
 	}
 
-	_, err = pipe.Exec(ctx)
-	if err != nil {
-		panic(err)
-	}
-}
-
-func IndexFungibleTxos(txn *lib.IndexContext) {
 	for _, txo := range txn.Txos {
 		bsv20, ok := txo.Data["bsv20"]
 		if !ok {
@@ -132,83 +126,68 @@ func IndexFungibleTxos(txn *lib.IndexContext) {
 		if b, ok := bsv20.(FungibleTxo); ok {
 			b.Height = txn.Height
 			b.Idx = txn.Idx
+			b.Satoshis = txo.Satoshis
+			b.Script = txo.Script
 
 			b.Outpoint = *txo.Outpoint
 			b.Listing = ordlock.ParseScript(txo)
 			if b.Listing != nil {
-				f, err := LoadFungible(b.TickID(), false)
+				f, err := LoadFungible(b.TickID())
 				if err == nil && f != nil {
 					b.Listing.PricePer = float64(b.Listing.Price) / (float64(b.Amt) / math.Pow(10, float64(f.Decimals)))
 				}
 			}
 			b.PKHash = txo.PKHash
-			b.Save()
+			b.Save(lib.Rdb)
 		}
 	}
+	if err := lib.Rdb.ZAdd(ctx, "TXLOG", redis.Z{Score: float64(txn.Height), Member: txn.Txid.String()}).Err(); err != nil {
+		panic(err)
+	}
+	// _, err = pipe.Exec(ctx)
+	// if err != nil {
+	// 	panic(err)
+	// }
 }
 
 var fungCache = make(map[string]*Fungible)
 
-func LoadFungible(tickId string, includeMempool bool) (*Fungible, error) {
+func LoadFungible(tickId string) (ftxo *Fungible, err error) {
 	if ft, ok := fungCache[tickId]; ok {
 		return ft, nil
 	}
-	j, err := lib.Rdb.JSONGet(ctx, "FUNGIBLE:"+tickId).Result()
-	if err == redis.Nil && includeMempool {
-		j, err = lib.Rdb.JSONGet(ctx, "MFUNGIBLE:"+tickId).Result()
-	}
-	if err != nil {
+	if j, err := lib.Rdb.JSONGet(ctx, "FUNGIBLE:"+tickId).Result(); err != nil {
 		return nil, err
+	} else {
+		ftxo = &Fungible{}
+		err = json.Unmarshal([]byte(j), ftxo)
 	}
-	ftxo := &Fungible{}
-	err = json.Unmarshal([]byte(j), ftxo)
 	if err == nil {
 		fungCache[tickId] = ftxo
 	}
-	return ftxo, err
-}
-
-func LoadFungibleTxo(outpoint lib.Outpoint, includeMempool bool) (ftxo *FungibleTxo, err error) {
-	j, err := lib.Rdb.JSONGet(ctx, fmt.Sprintf("FTXO:%s", outpoint.String())).Result()
-	if err == redis.Nil && includeMempool {
-		j, err = lib.Rdb.JSONGet(ctx, fmt.Sprintf("MFTXO:%s", outpoint.String())).Result()
-	}
-	if err != nil {
-		return
-	}
-	ftxo = &FungibleTxo{}
-	err = json.Unmarshal([]byte(j), ftxo)
 	return
 }
 
-func LoadFungibleTxos(outpoints []string, includeMempool bool) ([]*FungibleTxo, error) {
-	keys := make([]string, len(outpoints))
-	for i, outpoint := range outpoints {
-		keys[i] = fmt.Sprintf("FTXO:%s", outpoint)
+func LoadFungibles(tickIds []string) ([]*Fungible, error) {
+	keys := make([]string, len(tickIds))
+	for i, tickId := range tickIds {
+		keys[i] = "FUNGIBLE:" + tickId
 	}
 	items, err := lib.Rdb.JSONMGet(ctx, "$", keys...).Result()
 	if err != nil {
 		panic(err)
 	}
-	ftxos := make([]*FungibleTxo, len(outpoints))
+	tokens := make([]*Fungible, len(tickIds))
 	for i, item := range items {
-		btxo := []FungibleTxo{}
 		if item == nil {
-			if !includeMempool {
-				continue
-			}
-			item, err = lib.Rdb.JSONGet(ctx, fmt.Sprintf("MFTXO:%s", outpoints[i])).Result()
-			if err == redis.Nil {
-				continue
-			} else if err != nil {
-				panic(err)
-			}
+			continue
 		}
-		if err := json.Unmarshal([]byte(item.(string)), &btxo); err != nil {
+		token := []Fungible{}
+		if err := json.Unmarshal([]byte(item.(string)), &token); err != nil {
 			panic(err)
 		}
-		ftxos[i] = &btxo[0]
+		tokens[i] = &token[0]
 	}
 
-	return ftxos, nil
+	return tokens, nil
 }

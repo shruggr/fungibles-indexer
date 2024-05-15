@@ -25,15 +25,15 @@ func (p PKHash) MarshalJSON() ([]byte, error) {
 	return json.Marshal(add)
 }
 
-func (p *PKHash) FromAddress(a string) error {
-	script, err := bscript.NewP2PKHFromAddress(a)
+func NewPKHashFromAddress(a string) (p *PKHash, err error) {
+	add, err := bscript.NewAddressFromString(a)
+	// script, err := bscript.NewP2PKHFromAddress(a)
 	if err != nil {
-		return err
+		return
 	}
 
-	pkh := []byte(*script)[3:23]
-	*p = pkh
-	return nil
+	pkh := PKHash(add.PublicKeyHash)
+	return &pkh, nil
 }
 
 func (p *PKHash) UnmarshalJSON(data []byte) error {
@@ -42,5 +42,10 @@ func (p *PKHash) UnmarshalJSON(data []byte) error {
 	if err != nil {
 		return err
 	}
-	return p.FromAddress(add)
+	if pkh, err := NewPKHashFromAddress(add); err != nil {
+		return err
+	} else {
+		*p = *pkh
+	}
+	return nil
 }

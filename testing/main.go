@@ -15,8 +15,9 @@ import (
 )
 
 var rdb *redis.Client
+var cache *redis.Client
 
-var hexId = "fe125b9a7593e33f1144e7486a899b4f3f1ca5240e62918c9eb30efd073dcabb"
+var hexId = "cbe8ec376c3949078a52a47a6874899bd7dad15361a474c64a352fdc8582cf5c"
 
 func main() {
 	// var err error
@@ -33,17 +34,18 @@ func main() {
 	defer db.Close()
 
 	rdb = redis.NewClient(&redis.Options{
-		Addr:     os.Getenv("REDIS"),
+		Addr:     os.Getenv("REDISDB"),
 		Password: "", // no password set
 		DB:       0,  // use default DB
 	})
 
-	err = lib.Initialize(db, rdb)
-	if err != nil {
-		log.Panic(err)
-	}
+	cache = redis.NewClient(&redis.Options{
+		Addr:     os.Getenv("REDISCACHE"),
+		Password: "", // no password set
+		DB:       0,  // use default DB
+	})
 
-	err = ordinals.Initialize(db, rdb)
+	err = lib.Initialize(db, rdb, cache)
 	if err != nil {
 		log.Panic(err)
 	}

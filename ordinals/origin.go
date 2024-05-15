@@ -52,7 +52,7 @@ func calcOrigin(outpoint *lib.Outpoint, outAcc uint64, depth uint32) *lib.Outpoi
 				origin = calcOrigin(spend.Outpoint, spend.OutAcc, depth+1)
 				if origin != nil {
 					spend.SetOrigin(origin)
-					Rdb.Publish(context.Background(), origin.String(), outpoint.String())
+					lib.Rdb.Publish(context.Background(), origin.String(), outpoint.String())
 				}
 				return origin
 			}
@@ -167,7 +167,7 @@ func SetOriginNum(height uint32) (err error) {
 		}
 		num++
 	}
-	Rdb.Publish(context.Background(), "inscriptionNum", fmt.Sprintf("%d", num))
+	lib.Rdb.Publish(context.Background(), "inscriptionNum", fmt.Sprintf("%d", num))
 	// log.Println("Height", height, "Max Origin Num", num)
 	return
 }

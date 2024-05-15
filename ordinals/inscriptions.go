@@ -89,7 +89,7 @@ func SetInscriptionNum(height uint32) (err error) {
 		}
 		num++
 	}
-	Rdb.Publish(context.Background(), "inscriptionNum", fmt.Sprintf("%d", num))
+	lib.Rdb.Publish(context.Background(), "inscriptionNum", fmt.Sprintf("%d", num))
 	// log.Println("Height", height, "Max Origin Num", num)
 	return
 }
