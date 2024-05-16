@@ -3,34 +3,39 @@ deploy
 
 ## Token
 ---------
-|Collection        |Key                     |Type |Field/Score            |Value        
+|Collection        |Key                         |Type   |Field/Score            |Value        
 |-|-|-|-|-
-|**General**
-|Indexer Progress  |PROGRESS                |HASH |indexer                |height
-|Transactions      |TXLOG                   |SSET |height                 |txid
-|Txo State         |TXOSTATE                |SSET |spent.height|unix
+|**General Purpose**
+|Indexer Progress  |progress                    |HASH   |indexer                |height
+|Indexer Log       |idx:log:indexer             |STREAM |height-idx             |txid
+|Tx Log            |tx:log                      |SSET   |height/unix            |txid
+|TXOs              |txo:`outpoint`              |JSON   |                       |Txo
+|TXIs              |txi:`txid`                  |SSET   |vin                    |outpoint   
+|Txo State         |txo:state                   |SSET   |spent.height|unix
+||
+|**General Purpose Index**
+|GP Output Index   |oi:`tag`:`idxName`          |SSET   |spent.height|unix      |fieldPath=value:outpoint
+|GP Score Index    |si:`tag`:`idxName`          |SSET   |score                  |value
+|GP Log            |el:`tag`:`logName`          |STREAM |height-idx             |map
+||
 |**Fungibles**
-|Tokens            |FUNGIBLE:tickId         |JSON |                       |Fungible
-|TXOs              |FTXO:outpoint           |HASH |                       |FungibleTxo
-|Token outpoints   |FTXOSTATE:tickId        |SSET |spent.height|unix      |outpoint
-|Validate          |FVALIDATE:tickId:height |SSET |idx                    |outpoint
-|Token Supply      |FSUPPLY                 |SSET |supply                 |tickId
-|Token Spend       |FTXI:txid:tickId        |SET  |                       |outpoint   
-|Token Status      |FSTATUS:tick            |SSET |status                 |outpoint
-
-|**Addresses**
-|Address outpoints |FADDTXO:address:tickId  |SSET |spent.height|unix      |outpoint
-|Address spends    |FADDSPND:address:tickId |SSET |spend_height.idx       |outpoint
-|**Market**
-|Listings          |FLIST:tickId            |SSET |status.ppt             |outpoint
-|Sales             |FSALE:tickId            |SSET |height.idx             |outpoint
+|Token             |f:token:tickId              |JSON   |                       |Token
+|Token Supply      |f:supply                    |SSET   |supply                 |tickId
+|Validate          |f:validate:`tickId`:`height`|SSET   |idx                    |outpoint
+|FungTxos          |oi:bsv20:`tickId`           |SSET   |spent.height|unix      |outpoint
+|FungAddressTxos   |oi:bsv20:a:`add`:`tickId`   |SSET   |spent.height|unix      |outpoint
+|Holders           |si:bsv20:hold:`tickId`      |SSET   |balance                |address
+|Listings          |si:bsv20:list:`tickId`      |SSET   |status.ppt             |outpoint
+|Token Status      |si:bsv20:stat:`tickId`      |SSET   |status                 |outpoint
+|Address Market    |el:bsv20:mka:`address`      |STREAM |height-idx             |[listing, sale, cancel]
+|TickId Market     |el:bsv20:mkt:`tickId`       |STREAM |height-idx             |[listing, sale, cancel]
+|BSV20 Legacy      |bsv20Legacy             
+||
 |**Funding**
-|Fund Total        |FUNDTOTAL               |SSET |fundTotal              |tickId
-|Fund Balance      |FUNDBAL                 |SSET |fundBal                |tickId
-|Funds             |FUND                    |HSET |tickId                 |TokenFund
-|**Stats**
-|Holders           |FHOLD:tickId            |SSET |balance                |address
+|Funds             |f:fund:`tickId`             |JSON   |tickId                 |TokenFund
+|Fund Total        |f:fund:total                |SSET   |fundTotal              |tickId
+|Fund Balance      |f:fund:bal                  |SSET   |fundBal                |tickId
+||
 |**Cache**
-|Holders Calculted |FHOLDCACHE               |HASH |tick                   |time            
+|Holders Calculted |FHOLDCACHE                  |HASH   |tick                   |unix
 
-Status

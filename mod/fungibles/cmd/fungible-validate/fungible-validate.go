@@ -17,7 +17,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/redis/go-redis/v9"
 	"github.com/shruggr/fungibles-indexer/lib"
-	"github.com/shruggr/fungibles-indexer/ordinals"
+	"github.com/shruggr/fungibles-indexer/mod/fungibles"
 )
 
 // var settled = make(chan uint32, 1000)
@@ -30,8 +30,8 @@ var FROM_BLOCK uint
 var VERBOSE int
 var CONCURRENCY int
 var ctx = context.Background()
-var pkhashFunds = map[string]*ordinals.TokenFunds{}
-var tickIdFunds = map[string]*ordinals.TokenFunds{}
+var pkhashFunds = map[string]*fungibles.TokenFunds{}
+var tickIdFunds = map[string]*fungibles.TokenFunds{}
 var m sync.Mutex
 var sub *redis.PubSub
 
@@ -91,17 +91,18 @@ func main() {
 	sub = subRdb.Subscribe(ctx, "v2xfer")
 	ch1 := sub.Channel()
 
-	funds := rdb.HGetAll(ctx, "FUND").Val()
-	for tickId, j := range funds {
-		funds := ordinals.TokenFunds{}
-		err := json.Unmarshal([]byte(j), &funds)
-		if err != nil {
+	iter := rdb.Scan(ctx, 0, "f:fund:*", 0).Iterator()
+	for iter.Next(ctx) {
+		funds := fungibles.TokenFunds{}
+		if j, err := rdb.JSONGet(ctx, iter.Val()).Result(); err != nil {
+			log.Panic(err)
+		} else if err := json.Unmarshal([]byte(j), &funds); err != nil {
 			log.Panic(err)
 		}
 		pkhash := hex.EncodeToString(funds.PKHash)
 		pkhashFunds[pkhash] = &funds
 		m.Lock()
-		tickIdFunds[tickId] = &funds
+		tickIdFunds[funds.TickId()] = &funds
 		m.Unlock()
 		sub.Subscribe(ctx, pkhash)
 	}
@@ -109,7 +110,7 @@ func main() {
 	go func() {
 		for {
 			m.Lock()
-			tickIdFunds = ordinals.InitializeFunding(CONCURRENCY)
+			tickIdFunds = fungibles.InitializeFunding(CONCURRENCY)
 			for _, funds := range tickIdFunds {
 				pkhash := hex.EncodeToString(funds.PKHash)
 				if _, ok := pkhashFunds[pkhash]; !ok {
@@ -174,43 +175,43 @@ func processFungibles() (didWork bool) {
 	var wg sync.WaitGroup
 	limiter := make(chan struct{}, 8)
 	m.Lock()
-	fundsList := make([]*ordinals.TokenFunds, 0, len(tickIdFunds))
+	fundsList := make([]*fungibles.TokenFunds, 0, len(tickIdFunds))
 	for _, funds := range tickIdFunds {
-		if funds.Balance() >= ordinals.FUNGIBLE_OP_COST {
+		if funds.Balance() >= fungibles.FUNGIBLE_OP_COST {
 			fundsList = append(fundsList, funds)
 		}
 	}
 	m.Unlock()
 
 	for _, funds := range fundsList {
-		if funds.Balance() < ordinals.FUNGIBLE_OP_COST {
+		if funds.Balance() < fungibles.FUNGIBLE_OP_COST {
 			continue
 		}
 
 		log.Println("Processing ", funds.Id.String(), funds.Balance())
 		wg.Add(1)
 		limiter <- struct{}{}
-		go func(funds *ordinals.TokenFunds) {
+		go func(funds *fungibles.TokenFunds) {
 			defer func() {
 				<-limiter
 				wg.Done()
 			}()
 			tickId := funds.TickID()
-			token, err := ordinals.LoadFungible(tickId, false)
+			token, err := fungibles.LoadFungible(tickId, false)
 			if err != nil {
 				panic(err)
 			}
 			if token == nil {
 				return
 			}
-			limit := funds.Balance() / ordinals.FUNGIBLE_OP_COST
+			limit := funds.Balance() / fungibles.FUNGIBLE_OP_COST
 			var supply uint64
-			if fSupply, err := rdb.ZScore(ctx, "FSUPPLY", tickId).Result(); err != nil {
+			if fSupply, err := rdb.ZScore(ctx, "f:supply", tickId).Result(); err != nil {
 				panic(err)
 			} else {
 				supply = uint64(fSupply)
 			}
-			tickKey := fmt.Sprintf("FVALIDATE:%s:", tickId)
+			tickKey := fmt.Sprintf("validate:%s:", tickId)
 			blockIter := rdb.Scan(ctx, 0, tickKey+"*", 0).Iterator()
 
 			for blockIter.Next(ctx) {
@@ -222,7 +223,7 @@ func processFungibles() (didWork bool) {
 					if err != nil {
 						panic(err)
 					}
-					ftxo, err := ordinals.LoadFungibleTxo(*outpoint, true)
+					ftxo, err := lib.LoadTxo(*outpoint)
 					switch ftxo.Op {
 					case "mint":
 						if ftxo.Height > tip.Height-5 {

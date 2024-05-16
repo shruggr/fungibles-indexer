@@ -1,4 +1,4 @@
-package ordinals
+package ord
 
 import (
 	"bytes"
@@ -19,6 +19,7 @@ import (
 	"github.com/fxamacker/cbor"
 	"github.com/libsv/go-bt/v2/bscript"
 	"github.com/shruggr/fungibles-indexer/lib"
+	"github.com/shruggr/fungibles-indexer/mod/bitcom"
 )
 
 var AsciiRegexp = regexp.MustCompile(`^[[:ascii:]]*$`)
@@ -99,7 +100,7 @@ func ParseScript(txo *lib.Txo) {
 			if opReturn == 0 {
 				opReturn = startI
 			}
-			bitcom, err := lib.ParseBitcom(txo.Tx, vout, &i)
+			bitcom, err := bitcom.ParseBitcom(txo.Tx, vout, &i)
 			if err != nil {
 				continue
 			}
@@ -107,7 +108,7 @@ func ParseScript(txo *lib.Txo) {
 
 		case bscript.OpDATA1:
 			if op.Data[0] == '|' && opReturn > 0 {
-				bitcom, err := lib.ParseBitcom(txo.Tx, vout, &i)
+				bitcom, err := bitcom.ParseBitcom(txo.Tx, vout, &i)
 				if err != nil {
 					continue
 				}
@@ -146,15 +147,15 @@ ordLoop:
 			field = int(op.Data[0])
 		} else if op.Len > 1 {
 			if ins.Fields == nil {
-				ins.Fields = lib.Map{}
+				ins.Fields = map[string]interface{}{}
 			}
 			if op.Len <= 64 && utf8.Valid(op.Data) && !bytes.Contains(op.Data, []byte{0}) && !bytes.Contains(op.Data, []byte("\\u0000")) {
 				ins.Fields[string(op.Data)] = op2.Data
 			}
-			if string(op.Data) == lib.MAP {
+			if string(op.Data) == bitcom.MAP {
 				script := bscript.NewFromBytes(op2.Data)
 				pos := 0
-				md := lib.ParseMAP(script, &pos)
+				md := bitcom.ParseMAP(script, &pos)
 				if md != nil {
 					txo.AddData("map", md)
 				}
@@ -178,7 +179,7 @@ ordLoop:
 				ins.Parent = parent
 			}
 		case 5:
-			md := &lib.Map{}
+			md := &bitcom.Map{}
 			if err := cbor.Unmarshal(op2.Data, md); err == nil {
 				ins.Metadata = *md
 			}
@@ -188,7 +189,7 @@ ordLoop:
 			ins.File.Encoding = string(op2.Data)
 		default:
 			if ins.Fields == nil {
-				ins.Fields = lib.Map{}
+				ins.Fields = bitcom.Map{}
 			}
 
 		}
@@ -214,7 +215,7 @@ ordLoop:
 			if err == nil {
 				insType = "json"
 				ins.Json = data
-				bsv20, _ = ParseBsv20Inscription(ins.File, txo)
+				// bsv20, _ = ParseBsv20Inscription(ins.File, txo)
 			} else if AsciiRegexp.Match(ins.File.Content) {
 				if insType == "file" {
 					insType = "text"

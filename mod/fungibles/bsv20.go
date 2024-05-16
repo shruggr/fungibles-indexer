@@ -1,4 +1,4 @@
-package ordinals
+package fungibles
 
 import (
 	"context"
@@ -18,6 +18,7 @@ import (
 	"github.com/libsv/go-bt/bscript"
 	"github.com/redis/go-redis/v9"
 	"github.com/shruggr/fungibles-indexer/lib"
+	"github.com/shruggr/fungibles-indexer/mod/ord"
 )
 
 type Bsv20Status int
@@ -81,7 +82,7 @@ func ParseBsv20Inscription(ord *lib.File, txo *lib.Txo) (interface{}, error) {
 
 	switch op {
 	case "deploy", "deploy+mint":
-		f := Fungible{
+		f := Token{
 			Ticker: tick,
 			Id:     id,
 			Op:     op,
@@ -198,7 +199,7 @@ func (t *TokenFunds) Save() {
 	if t.Total == 0 {
 		return
 	}
-	if err := lib.Rdb.ZAdd(ctx, "FUNDTOTAL", redis.Z{Score: float64(t.Total), Member: t.TickID()}).Err(); err != nil {
+	if err := lib.Rdb.ZAdd(ctx, "f:fund:total", redis.Z{Score: float64(t.Total), Member: t.TickID()}).Err(); err != nil {
 		panic(err)
 	}
 
@@ -207,7 +208,8 @@ func (t *TokenFunds) Save() {
 		panic(err)
 	}
 	lib.Rdb.Publish(ctx, "tokenFunds", fundsJson)
-	if err := lib.Rdb.HSet(ctx, "FUND", t.TickID(), fundsJson).Err(); err != nil {
+	key := fmt.Sprintf("f:%s:func", t.TickID())
+	if err := lib.Rdb.JSONSet(ctx, key, "$", fundsJson).Err(); err != nil {
 		panic(err)
 	}
 	log.Println("Updated", string(fundsJson))
@@ -249,7 +251,7 @@ func (t *TokenFunds) UpdateFunding() {
 }
 
 func GetPendingOps(tickId string) (uint32, error) {
-	if count, err := lib.Rdb.ZCount(ctx, "FSTATUS:"+tickId, "0", "0").Result(); err != nil {
+	if count, err := lib.Rdb.ZCount(ctx, "status:"+tickId, "0", "0").Result(); err != nil {
 		return 0, err
 	} else {
 		return uint32(count), nil
@@ -257,9 +259,9 @@ func GetPendingOps(tickId string) (uint32, error) {
 }
 
 func GetFundUsed(tickId string) (int64, error) {
-	if validCount, err := lib.Rdb.ZCount(ctx, "FSTATUS:"+tickId, "1", "1").Result(); err != nil {
+	if validCount, err := lib.Rdb.ZCount(ctx, "status:"+tickId, "1", "1").Result(); err != nil {
 		return 0, err
-	} else if invalidCount, err := lib.Rdb.ZCount(ctx, "FSTATUS:"+tickId, "-1", "-1").Result(); err != nil {
+	} else if invalidCount, err := lib.Rdb.ZCount(ctx, "status:"+tickId, "-1", "-1").Result(); err != nil {
 		return 0, err
 	} else {
 		return (validCount + invalidCount) * FUNGIBLE_OP_COST, nil
@@ -267,7 +269,7 @@ func GetFundUsed(tickId string) (int64, error) {
 }
 
 func GetFundTotal(tickId string) (int64, error) {
-	if total, err := lib.Rdb.ZScore(ctx, "FUNDTOTAL", tickId).Result(); err != nil {
+	if total, err := lib.Rdb.ZScore(ctx, "f:fund:total", tickId).Result(); err != nil {
 		return 0, err
 	} else {
 		return int64(total), nil
@@ -279,11 +281,11 @@ func InitializeFunding(concurrency int) map[string]*TokenFunds {
 	limiter := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
 	var m sync.Mutex
-	iter := lib.Rdb.Scan(ctx, 0, "FUNGIBLE:*", 0).Iterator()
+	iter := lib.Rdb.Scan(ctx, 0, "f:token:*", 0).Iterator()
 	tickIds := make([]string, 0, 10000)
 	for iter.Next(ctx) {
 		key := iter.Val()
-		tickIds = append(tickIds, strings.TrimPrefix(key, "FUNGIBLE:"))
+		tickIds = append(tickIds, strings.TrimPrefix(key, "f:token:"))
 	}
 	fmt.Println("Processing Fungible Funding")
 	for i := 0; i < len(tickIds); i += 100 {
@@ -311,7 +313,7 @@ func InitializeFunding(concurrency int) map[string]*TokenFunds {
 				if err != nil {
 					log.Panicln(err)
 				}
-				RefreshAddress(ctx, add.AddressString)
+				ord.RefreshAddress(ctx, add.AddressString)
 
 				funds.UpdateFunding()
 				m.Lock()

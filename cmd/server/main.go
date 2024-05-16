@@ -14,9 +14,11 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/gofiber/fiber/v2/middleware/recover"
+	"github.com/gofiber/swagger"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 	"github.com/redis/go-redis/v9"
+	_ "github.com/shruggr/fungibles-indexer/cmd/server/docs"
 	"github.com/shruggr/fungibles-indexer/lib"
 	"github.com/shruggr/fungibles-indexer/ordinals"
 )
@@ -83,6 +85,10 @@ func init() {
 	lib.Initialize(db, rdb, cache)
 }
 
+// @title BSV20/21 Fungibles API
+// @version 1.0
+// @description This is a sample server server.
+// @schemes http
 func main() {
 	// flag.IntVar(&CONCURRENCY, "c", 64, "Concurrency Limit")
 	flag.IntVar(&PORT, "p", 8082, "Port to listen on")
@@ -91,6 +97,9 @@ func main() {
 	app := fiber.New()
 	app.Use(recover.New())
 	app.Use(logger.New())
+
+	app.Get("/", HealthCheck)
+	app.Get("/swagger/*", swagger.HandlerDefault) // default
 
 	app.Get("/yo", func(c *fiber.Ctx) error {
 		return c.SendString("Yo!")
@@ -106,7 +115,7 @@ func main() {
 		if c.QueryBool("included", true) {
 			min = fmt.Sprintf("%d", INCLUDE_THREASHOLD)
 		}
-		if tickIds, err = rdb.ZRevRangeByScore(c.Context(), "FUNDTOTAL", &redis.ZRangeBy{
+		if tickIds, err = rdb.ZRevRangeByScore(c.Context(), "f:fund:total", &redis.ZRangeBy{
 			Min:    min,
 			Max:    "+inf",
 			Count:  int64(limit),
@@ -198,7 +207,7 @@ func main() {
 		}
 		ctx := c.Context()
 		outpoints := make([]string, 0, 10)
-		keyIter := rdb.Scan(ctx, 0, fmt.Sprintf("FTXI:%s:*", txid), 0).Iterator()
+		keyIter := rdb.Scan(ctx, 0, fmt.Sprintf("f.input:%s:*", txid), 0).Iterator()
 
 		for keyIter.Next(ctx) {
 			key := keyIter.Val()
@@ -250,7 +259,7 @@ func main() {
 			} else {
 				for _, outpoint := range outpoints {
 					// m := map[string]string{}
-					if vals, err := rdb.HMGet(ctx, "FTXO:"+outpoint, "status", "amt", "listing").Result(); err != nil {
+					if vals, err := rdb.HMGet(ctx, "TXO:"+outpoint, "status", "amt", "listing").Result(); err != nil {
 						return &fiber.Error{
 							Code:    fiber.StatusInternalServerError,
 							Message: err.Error(),
@@ -473,4 +482,24 @@ func main() {
 	// })
 	log.Println("Listening on", PORT)
 	app.Listen(fmt.Sprintf(":%d", PORT))
+}
+
+// HealthCheck godoc
+// @Summary Show the status of server.
+// @Description get the status of server.
+// @Tags root
+// @Accept */*
+// @Produce json
+// @Success 200 {object} map[string]interface{}
+// @Router / [get]
+func HealthCheck(c *fiber.Ctx) error {
+	res := map[string]interface{}{
+		"data": "Server is up and running",
+	}
+
+	if err := c.JSON(res); err != nil {
+		return err
+	}
+
+	return nil
 }

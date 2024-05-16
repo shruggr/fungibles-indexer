@@ -7,6 +7,8 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -16,7 +18,6 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/redis/go-redis/v9"
 	"github.com/shruggr/fungibles-indexer/lib"
-	"github.com/shruggr/fungibles-indexer/ordinals"
 )
 
 // var settled = make(chan uint32, 1000)
@@ -24,16 +25,18 @@ var POSTGRES string
 var db *pgxpool.Pool
 var rdb *redis.Client
 var cache *redis.Client
+
 var INDEXER string
 var TOPIC string
-var FROM_BLOCK uint
 var VERBOSE int
-var CONCURRENCY int = 1
 var ctx = context.Background()
 
 const REFRESH = 15 * time.Second
 
 var tip *models.BlockHeader
+var progress uint
+var lastBlock uint32
+var lastIdx uint64
 
 func init() {
 	wd, _ := os.Getwd()
@@ -42,7 +45,7 @@ func init() {
 
 	flag.StringVar(&INDEXER, "id", "inscriptions", "Indexer name")
 	flag.StringVar(&TOPIC, "t", "", "Junglebus SubscriptionID")
-	flag.UintVar(&FROM_BLOCK, "s", uint(lib.TRIGGER), "Start from block")
+	flag.UintVar(&progress, "s", uint(lib.TRIGGER), "Start from block")
 	flag.IntVar(&VERBOSE, "v", 0, "Verbose")
 	flag.Parse()
 
@@ -73,41 +76,39 @@ func init() {
 
 func main() {
 	var err error
-	if tip, err = lib.JB.GetChaintip(ctx); err != nil {
-		log.Panic(err)
+	tip, err = lib.JB.GetChaintip(ctx)
+	if err != nil {
+		panic(err)
 	}
 	go func() {
-		ticker := time.NewTicker(REFRESH)
-		for range ticker.C {
-			if newTip, err := lib.JB.GetChaintip(ctx); err != nil {
+		for {
+			time.Sleep(REFRESH)
+			if tip, err = lib.JB.GetChaintip(ctx); err != nil {
 				log.Println("GetChaintip", err)
-			} else {
-				tip = newTip
 			}
 		}
 	}()
 
 	if INDEXER != "" {
-		progress, err := rdb.HGet(ctx, "PROGRESS", INDEXER).Uint64()
-		if err != nil && err != redis.Nil {
+		if logs, err := rdb.XRevRangeN(ctx, "idx:log:"+INDEXER, "+", "-", 1).Result(); err != nil {
 			log.Panic(err)
-		}
-		if progress > 6 {
-			progress -= 6
-		}
-		if progress > uint64(FROM_BLOCK) {
-			FROM_BLOCK = uint(progress)
+		} else if len(logs) > 0 {
+			parts := strings.Split(logs[0].ID, "-")
+			if height, err := strconv.ParseUint(parts[0], 10, 32); err == nil && height > uint64(progress) {
+				progress = uint(height)
+				lastBlock = uint32(progress)
+			} else if idx, err := strconv.ParseUint(parts[1], 10, 64); err == nil {
+				lastIdx = idx
+			}
 		}
 	}
 
 	var txCount int
-	var height uint32
-	var idx uint64
-	ticker := time.NewTicker(10 * time.Second)
 	go func() {
+		ticker := time.NewTicker(10 * time.Second)
 		for range ticker.C {
 			if txCount > 0 {
-				log.Printf("Blk %d I %d - %d txs %d/s\n", height, idx, txCount, txCount/10)
+				log.Printf("Blk %d I %d - %d txs %d/s\n", lastBlock, lastIdx, txCount, txCount/10)
 			}
 			txCount = 0
 		}
@@ -121,18 +122,12 @@ func main() {
 				log.Printf("[STATUS]: %d %v\n", status.StatusCode, status.Message)
 			}
 			if status.StatusCode == 200 {
-				height = status.Block
-				if INDEXER != "" {
-					if err := rdb.HSet(ctx, "PROGRESS", INDEXER, height).Err(); err != nil {
-						log.Panic(err)
-					}
-				}
-				FROM_BLOCK = uint(status.Block) + 1
-				if FROM_BLOCK > uint(tip.Height-5) {
+				progress = uint(status.Block) + 1
+				if progress > uint(tip.Height-5) {
 					sub.Unsubscribe()
 					ticker := time.NewTicker(REFRESH)
 					for range ticker.C {
-						if FROM_BLOCK <= uint(tip.Height-5) {
+						if progress <= uint(tip.Height-5) {
 							sub = subscribe(eventHandler)
 							break
 						}
@@ -147,38 +142,32 @@ func main() {
 				return
 			}
 		},
+		OnTransaction: func(txn *models.TransactionResponse) {
+			if VERBOSE > 0 {
+				log.Printf("[TX]: %d %s\n", len(txn.Transaction), txn.Id)
+			}
+			if txn.BlockHeight < lastBlock || (txn.BlockHeight == lastBlock && txn.BlockIndex <= lastIdx) {
+				return
+			}
+			if err := rdb.XAdd(ctx, &redis.XAddArgs{
+				Stream: "idx:log:" + INDEXER,
+				Values: map[string]interface{}{
+					"txn": txn.Id,
+				},
+				ID: fmt.Sprintf("%d-%d", txn.BlockHeight, txn.BlockIndex),
+			}).Err(); err != nil {
+				log.Panic(err)
+			}
+			lastBlock = txn.BlockHeight
+			lastIdx = txn.BlockIndex
+			txCount++
+		},
 		OnError: func(err error) {
 			log.Panicf("[ERROR]: %v\n", err)
 		},
-		OnTransaction: func(txn *models.TransactionResponse) {
-			if VERBOSE > 0 {
-				log.Printf("[TX]: %d - %d: %d %s\n", txn.BlockHeight, txn.BlockIndex, len(txn.Transaction), txn.Id)
-			}
-			txCount++
-			height = txn.BlockHeight
-			idx = txn.BlockIndex
-			txCtx, err := lib.ParseTxn(txn.Transaction, txn.BlockHash, txn.BlockHeight, txn.BlockIndex)
-			if err != nil {
-				log.Panicln(txn.Id, err)
-			}
-			ordinals.IndexFungibles(txCtx)
-			// if INDEXER != "" {
-			// rdb.SAdd(ctx, "TXLOG", txn.Id)
-			// }
-		},
-		// OnMempool: func(txn *models.TransactionResponse) {
-		// 	if VERBOSE > 0 {
-		// 		log.Printf("[MEMPOOL]: %d %s\n", len(txn.Transaction), txn.Id)
-		// 	}
-		// 	txCtx, err := lib.ParseTxn(txn.Transaction, txn.BlockHash, txn.BlockHeight, txn.BlockIndex)
-		// 	if err != nil {
-		// 		log.Panicln(txn.Id, err)
-		// 	}
-		// 	ordinals.IndexFungiblesMempool(txCtx)
-		// },
 	}
 
-	log.Println("Subscribing to Junglebus from block", FROM_BLOCK)
+	log.Println("Subscribing to Junglebus from block", progress)
 	sub = subscribe(eventHandler)
 	defer func() {
 		sub.Unsubscribe()
@@ -195,17 +184,23 @@ func main() {
 	}()
 
 	<-make(chan struct{})
+
 }
 
 func subscribe(eventHandler junglebus.EventHandler) *junglebus.Subscription {
-	sub, err := lib.JB.Subscribe(
+	if sub, err := lib.JB.SubscribeWithQueue(
 		context.Background(),
 		TOPIC,
-		uint64(FROM_BLOCK),
+		uint64(progress),
+		0,
 		eventHandler,
-	)
-	if err != nil {
+		&junglebus.SubscribeOptions{
+			QueueSize: 100000,
+			LiteMode:  true,
+		},
+	); err != nil {
 		panic(err)
+	} else {
+		return sub
 	}
-	return sub
 }

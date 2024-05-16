@@ -1,4 +1,4 @@
-package ordinals
+package ord
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"log"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/redis/go-redis/v9"
 	"github.com/shruggr/fungibles-indexer/lib"
 )
 
@@ -14,10 +15,33 @@ const MAX_DEPTH = 256
 
 type Origin struct {
 	Origin *lib.Outpoint `json:"origin"`
-	Num    uint64        `json:"num"`
-	Height *uint32       `json:"height"`
-	Idx    uint64        `json:"idx"`
+	Nonce  uint32        `json:"nonce"`
 	Map    lib.Map       `json:"map,omitempty"`
+}
+
+// Parse(*IndexContext)
+//
+//	Save(*IndexContext, redis.Cmdable)
+//	SetSpend(*IndexContext, redis.Cmdable)
+//	// []byte, string, uint, int
+//	Indexes() []map[string]interface{}
+func (o *Origin) Parse(ctx *lib.IndexContext) {
+	// if o.Origin != nil {
+	// 	ctx.Origin = o.Origin
+	// 	ctx.Nonce = o.Nonce
+	// }
+}
+
+func (o *Origin) Save(ctx *lib.IndexContext, rdb redis.Cmdable) error {
+	return fmt.Errorf("not-implemented")
+}
+
+func (o *Origin) SetSpend(ctx *lib.IndexContext, rdb redis.Cmdable) error {
+	return fmt.Errorf("not-implemented")
+}
+
+func (o *Origin) Indexes() []map[string]interface{} {
+	return []map[string]interface{}{}
 }
 
 func LoadOrigin(outpoint *lib.Outpoint, outAcc uint64) *lib.Outpoint {
