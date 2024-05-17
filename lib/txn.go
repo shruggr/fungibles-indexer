@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/libsv/go-bt/bscript"
 	"github.com/libsv/go-bt/v2"
 	"github.com/redis/go-redis/v9"
 )
@@ -25,16 +26,8 @@ type IndexContext struct {
 }
 
 func (ctx *IndexContext) SaveTxos(cmdable redis.Cmdable) {
-	scoreHeight := ctx.Height
-	if scoreHeight == 0 {
-		scoreHeight = uint32(time.Now().Unix())
-	}
-	spentScore, err := strconv.ParseFloat(fmt.Sprintf("0.%010d", scoreHeight), 64)
-	if err != nil {
-		panic(err)
-	}
 	for _, txo := range ctx.Txos {
-		txo.Save(ctx, cmdable, spentScore)
+		txo.Save(ctx, cmdable)
 	}
 
 }
@@ -82,8 +75,10 @@ func ParseTxn(rawtx []byte, blockId string, height uint32, idx uint64) (ctx *Ind
 	}
 	txid := tx.TxIDBytes()
 	ctx = &IndexContext{
-		Tx:   tx,
-		Txid: txid,
+		Tx:     tx,
+		Txid:   txid,
+		Spends: make([]*Txo, 0, len(tx.Inputs)),
+		Txos:   make([]*Txo, 0, len(tx.Outputs)),
 	}
 	if height > 0 {
 		ctx.BlockId = &blockId
@@ -95,42 +90,47 @@ func ParseTxn(rawtx []byte, blockId string, height uint32, idx uint64) (ctx *Ind
 		ParseSpends(ctx)
 	}
 
-	ParseTxos(tx, ctx)
+	ParseTxos(ctx)
 	return
 }
 
 func ParseSpends(ctx *IndexContext) {
+	inAcc := uint64(0)
 	for vin, txin := range ctx.Tx.Inputs {
-		var spend *Txo
 		outpoint := NewOutpoint(txin.PreviousTxID(), txin.PreviousTxOutIndex)
-		if txo, err := LoadTxo(outpoint.String()); err != nil {
+		spend, err := LoadTxo(outpoint.String())
+		if err != nil {
 			panic(err)
-		} else if txo == nil {
-			spend = &Txo{
-				Outpoint:    outpoint,
-				Spend:       &ctx.Txid,
-				Vin:         uint32(vin),
-				SpendHeight: ctx.Height,
-				SpendIdx:    ctx.Idx,
-			}
-		} else {
-			txo.Spend = &ctx.Txid
-			txo.Vin = uint32(vin)
-			txo.SpendHeight = ctx.Height
-			txo.SpendIdx = ctx.Idx
 		}
-
+		if spend == nil {
+			if inTx, err := LoadTx(txin.PreviousTxIDStr()); err != nil {
+				panic(err)
+			} else {
+				inCtx := &IndexContext{
+					Tx:   inTx,
+					Txid: inTx.TxIDBytes(),
+				}
+				ParseTxos(inCtx)
+				spend = inCtx.Txos[txin.PreviousTxOutIndex]
+			}
+		}
+		spend.Spend = &ctx.Txid
+		spend.Vin = uint32(vin)
+		spend.SpendHeight = ctx.Height
+		spend.SpendIdx = ctx.Idx
+		spend.InAcc = inAcc
 		ctx.Spends = append(ctx.Spends, spend)
+		inAcc += spend.Satoshis
 	}
 }
 
-func ParseTxos(tx *bt.Tx, ctx *IndexContext) {
+func ParseTxos(ctx *IndexContext) {
 	height := ctx.Height
 	if height == 0 {
 		height = uint32(time.Now().Unix())
 	}
 	accSats := uint64(0)
-	for vout, txout := range tx.Outputs {
+	for vout, txout := range ctx.Tx.Outputs {
 		outpoint := Outpoint(binary.BigEndian.AppendUint32(ctx.Txid, uint32(vout)))
 		txo := &Txo{
 			Height:   ctx.Height,
@@ -141,10 +141,11 @@ func ParseTxos(tx *bt.Tx, ctx *IndexContext) {
 			Script:   *txout.LockingScript,
 		}
 
-		if txout.LockingScript.IsP2PKH() {
-			pkhash := PKHash([]byte((*txout.LockingScript)[3:23]))
+		if len(txo.Script) >= 25 && bscript.NewFromBytes(txo.Script[:25]).IsP2PKH() {
+			pkhash := PKHash(txo.Script[3:23])
 			txo.PKHash = &pkhash
 		}
+
 		ctx.Txos = append(ctx.Txos, txo)
 		accSats += txout.Satoshis
 	}

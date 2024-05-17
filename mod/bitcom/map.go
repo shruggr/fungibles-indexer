@@ -20,11 +20,17 @@ func (m *Map) Tag() string {
 func (m *Map) Save(*lib.IndexContext, redis.Cmdable, *lib.Txo)     {}
 func (m *Map) SetSpend(*lib.IndexContext, redis.Cmdable, *lib.Txo) {}
 func (m *Map) AddLog(logName string, log map[string]string)        {}
-func (m *Map) Logs() map[string]map[string]string                  {}
-func (m *Map) IndexBySpent(idxName string, idxValue string)        {}
-func (m *Map) OutputIndex() map[string][]string                    {}
-func (m *Map) IndexSpend(idxName string, idxValue string)          {}
-func (m *Map) SpendIndex() map[string][]string                     {}
+func (m *Map) Logs() map[string]map[string]string {
+	return map[string]map[string]string{}
+}
+func (m *Map) IndexBySpent(idxName string, idxValue string) {}
+func (m *Map) OutputIndex() map[string][]string {
+	return map[string][]string{}
+}
+func (m *Map) IndexByScore(idxName string, idxValue string, score float64) {}
+func (m *Map) ScoreIndex() map[string]map[string]float64 {
+	return map[string]map[string]float64{}
+}
 
 func (m Map) Value() (driver.Value, error) {
 	if m == nil {
@@ -41,8 +47,8 @@ func (m *Map) Scan(value interface{}) error {
 	return json.Unmarshal(b, &m)
 }
 
-func ParseMAP(script *bscript.Script, idx *int) *Map {
-	op, err := lib.ReadOp(*script, idx)
+func ParseMAP(script []byte, idx *int) *Map {
+	op, err := lib.ReadOp(script, idx)
 	if err != nil {
 		return nil
 	}
@@ -52,14 +58,14 @@ func ParseMAP(script *bscript.Script, idx *int) *Map {
 	mp := Map{}
 	for {
 		prevIdx := *idx
-		op, err = lib.ReadOp(*script, idx)
+		op, err = lib.ReadOp(script, idx)
 		if err != nil || op.OpCode == bscript.OpRETURN || (op.OpCode == 1 && op.Data[0] == '|') {
 			*idx = prevIdx
 			break
 		}
 		opKey := op.Data
 		prevIdx = *idx
-		op, err = lib.ReadOp(*script, idx)
+		op, err = lib.ReadOp(script, idx)
 		if err != nil || op.OpCode == bscript.OpRETURN || (op.OpCode == 1 && op.Data[0] == '|') {
 			*idx = prevIdx
 			break

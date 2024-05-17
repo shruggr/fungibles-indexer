@@ -16,11 +16,11 @@ func (b *BFile) Tag() string {
 	return "b"
 }
 
-func ParseB(script *bscript.Script, idx *int) (b *BFile) {
+func ParseB(script []byte, idx *int) (b *BFile) {
 	b = &BFile{}
 	for i := 0; i < 4; i++ {
 		prevIdx := *idx
-		op, err := lib.ReadOp(*script, idx)
+		op, err := lib.ReadOp(script, idx)
 		if err != nil || op.OpCode == bscript.OpRETURN || (op.OpCode == 1 && op.Data[0] == '|') {
 			*idx = prevIdx
 			break

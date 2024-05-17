@@ -12,10 +12,29 @@ import (
 	"github.com/bitcoinschema/go-bitcoin"
 	"github.com/libsv/go-bt/v2"
 	"github.com/libsv/go-bt/v2/bscript"
+	"github.com/redis/go-redis/v9"
 	"github.com/shruggr/fungibles-indexer/lib"
 )
 
 type Sigmas []*Sigma
+
+func (s *Sigmas) Tag() string {
+	return "sigma"
+}
+func (s *Sigmas) Save(*lib.IndexContext, redis.Cmdable, *lib.Txo)     {}
+func (s *Sigmas) SetSpend(*lib.IndexContext, redis.Cmdable, *lib.Txo) {}
+func (s *Sigmas) AddLog(logName string, log map[string]string)        {}
+func (s *Sigmas) Logs() map[string]map[string]string {
+	return map[string]map[string]string{}
+}
+func (s *Sigmas) IndexBySpent(idxName string, idxValue string) {}
+func (s *Sigmas) OutputIndex() map[string][]string {
+	return map[string][]string{}
+}
+func (s *Sigmas) IndexByScore(idxName string, idxValue string, score float64) {}
+func (s *Sigmas) ScoreIndex() map[string]map[string]float64 {
+	return map[string]map[string]float64{}
+}
 
 func (s Sigmas) Value() (driver.Value, error) {
 	return json.Marshal(s)

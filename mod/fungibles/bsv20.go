@@ -251,7 +251,7 @@ func (t *TokenFunds) UpdateFunding() {
 }
 
 func GetPendingOps(tickId string) (uint32, error) {
-	if count, err := lib.Rdb.ZCount(ctx, "status:"+tickId, "0", "0").Result(); err != nil {
+	if count, err := lib.Rdb.ZCount(ctx, "stat:"+tickId, "0", "0").Result(); err != nil {
 		return 0, err
 	} else {
 		return uint32(count), nil
@@ -259,9 +259,9 @@ func GetPendingOps(tickId string) (uint32, error) {
 }
 
 func GetFundUsed(tickId string) (int64, error) {
-	if validCount, err := lib.Rdb.ZCount(ctx, "status:"+tickId, "1", "1").Result(); err != nil {
+	if validCount, err := lib.Rdb.ZCount(ctx, "stat:"+tickId, "1", "1").Result(); err != nil {
 		return 0, err
-	} else if invalidCount, err := lib.Rdb.ZCount(ctx, "status:"+tickId, "-1", "-1").Result(); err != nil {
+	} else if invalidCount, err := lib.Rdb.ZCount(ctx, "stat:"+tickId, "-1", "-1").Result(); err != nil {
 		return 0, err
 	} else {
 		return (validCount + invalidCount) * FUNGIBLE_OP_COST, nil

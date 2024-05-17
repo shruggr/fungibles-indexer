@@ -90,7 +90,7 @@ func (f *FungibleTxo) SetSpend(txCtx *lib.IndexContext, cmdable redis.Cmdable, t
 }
 
 func (f *FungibleTxo) Save(txCtx *lib.IndexContext, cmdable redis.Cmdable, txo *lib.Txo) {
-	status, err := lib.Rdb.ZScore(ctx, "oi:bsv20:status:"+f.TickID(), txo.Outpoint.String()).Result()
+	status, err := lib.Rdb.ZScore(ctx, "oi:bsv20:stat:"+f.TickID(), txo.Outpoint.String()).Result()
 	if err == redis.Nil {
 		f.SetStatus(cmdable, txo, Bsv20Status(f.Status), "")
 	} else if err != nil {
@@ -128,7 +128,7 @@ func (f *FungibleTxo) Save(txCtx *lib.IndexContext, cmdable redis.Cmdable, txo *
 			}).Err(); err != nil {
 				panic(err)
 			}
-			cmdable.ZAdd(ctx, "status:"+f.TickID(), redis.Z{
+			cmdable.ZAdd(ctx, "stat:"+f.TickID(), redis.Z{
 				Score:  float64(Pending),
 				Member: txo.Outpoint.String(),
 			})
