@@ -29,7 +29,6 @@ func (ctx *IndexContext) SaveTxos(cmdable redis.Cmdable) {
 	for _, txo := range ctx.Txos {
 		txo.Save(ctx, cmdable)
 	}
-
 }
 
 func (ctx *IndexContext) SaveSpends(cmdable redis.Cmdable) {

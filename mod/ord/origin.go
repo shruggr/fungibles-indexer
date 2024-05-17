@@ -5,6 +5,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"github.com/shruggr/fungibles-indexer/lib"
+	"github.com/shruggr/fungibles-indexer/mod/bitcom"
 )
 
 const MAX_DEPTH = 1024
@@ -20,12 +21,6 @@ func (o *Origin) Tag() string {
 	return "origin"
 }
 
-func ParseTxn(rawtx []byte, blockId string, height uint32, idx uint64) (ctx *lib.IndexContext, err error) {
-	ctx, err = lib.ParseTxn(rawtx, blockId, height, idx)
-	// Parse()
-	return
-}
-
 func (o *Origin) Parse(ctx *lib.IndexContext) {
 	for _, txo := range ctx.Txos {
 		if txo.Satoshis != 1 {
@@ -35,6 +30,17 @@ func (o *Origin) Parse(ctx *lib.IndexContext) {
 		if origin != nil {
 			txo.AddData("origin", origin)
 		}
+	}
+}
+
+func (o *Origin) ParseTxo(ctx *lib.IndexContext, txo *lib.Txo) {
+	if txo.Satoshis != 1 {
+		return
+	}
+	bitcom.ParseScript(txo)
+	origin := LoadOrigin(ctx, txo)
+	if origin != nil {
+		txo.AddData("origin", origin)
 	}
 }
 
@@ -54,15 +60,13 @@ func calcOrigin(txCtx *lib.IndexContext, txo *lib.Txo, depth uint32) *Origin {
 					log.Panic(err)
 				} else if spendCtx, err := lib.ParseTxn(rawtx, "", 0, 0); err != nil {
 					log.Panic(err)
-				} else {
-					origin = calcOrigin(spendCtx, spend, depth+1)
-					if origin != nil {
-						spend.AddData("origin", origin)
-						spend.Save(spendCtx, lib.Rdb)
-					}
+				} else if origin = calcOrigin(spendCtx, spend, depth+1); origin != nil {
+					spend.AddData("origin", origin)
+					spend.Save(spendCtx, lib.Rdb)
 				}
 			}
 			if origin != nil {
+				// if
 				return &Origin{
 					Outpoint: origin.Outpoint,
 					Nonce:    origin.Nonce + 1,
@@ -83,23 +87,6 @@ func calcOrigin(txCtx *lib.IndexContext, txo *lib.Txo, depth uint32) *Origin {
 func (o *Origin) Save(ctx *lib.IndexContext, cmdable redis.Cmdable, txo *lib.Txo) {
 	o.IndexBySpent(o.Outpoint.String(), txo.Outpoint.String())
 }
-
-// func (o *Origin) Save() {
-// 	_, err := lib.Db.Exec(context.Background(), `
-// 		INSERT INTO origins(origin, height, idx, map)
-// 		VALUES($1, $2, $3, $4)
-// 		ON CONFLICT(origin) DO UPDATE SET
-// 			height=EXCLUDED.height,
-// 			idx=EXCLUDED.idx`,
-// 		o.Origin,
-// 		o.Height,
-// 		o.Idx,
-// 		o.Map,
-// 	)
-// 	if err != nil {
-// 		log.Panicf("Save Error: %s %+v\n", o.Origin, err)
-// 	}
-// }
 
 // func SaveMap(origin *lib.Outpoint) {
 // 	rows, err := lib.Db.Query(context.Background(), `
